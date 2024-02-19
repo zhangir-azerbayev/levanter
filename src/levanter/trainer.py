@@ -522,6 +522,36 @@ class Trainer:
 
         return TrainerState(0, model, opt_state, training_key, is_trainable)
 
+    
+    def trainable_params_only(self, model: M) -> M:
+        """
+        Filters out non-trainable parameters from the model. This is used internally to
+        for the optimizer state and to compute gradients, but you can also use it to filter out
+        params for logging or something.
+        """
+        return self.partition_trainable_params(model)[0]
+
+    def partition_trainable_params(self, model):
+        """
+        Partitions the model into trainable and non-trainable parameters. This is used internally
+        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
+        or something.
+
+        Returns:
+            trainable, non-trainable
+        """
+
+        def trainable_and_diffable(pred):
+            if callable(pred):
+                return lambda x: pred(x) and is_inexact_arrayish(x)
+            elif pred is True:
+                return is_inexact_arrayish
+            else:
+                return pred
+
+        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
+        return eqx.partition(model, combined_mask)
+
 
 def init_optimizer_for_trainables(optimizer, model, is_trainable):
     trainable, _ = _partition_trainable_params(model, is_trainable)
@@ -552,58 +582,30 @@ def cast_params_by_trainability(model, mp, is_trainable):
     model = eqx.combine(trainable, non_trainable)
     return model
 
-    def trainable_params_only(self, model: M) -> M:
-        """
-        Filters out non-trainable parameters from the model. This is used internally to
-        for the optimizer state and to compute gradients, but you can also use it to filter out
-        params for logging or something.
-        """
-        return self.partition_trainable_params(model)[0]
 
-    def partition_trainable_params(self, model):
-        """
-        Partitions the model into trainable and non-trainable parameters. This is used internally
-        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
-        or something.
+def maybe_load_checkpoint(
+    self, model: M, training_state: S, *, axis_mapping=None, mesh=None
+) -> Optional[Tuple[M, S, int]]:
+    """Loads a checkpoint if one exists and we're supposed to load it,
+    otherwise returns the model and training state as is"""
+    if self.config.load_checkpoint is not False:
+        # TODO: don't remake the checkpointer every time
+        checkpointer = self.config.checkpointer.create(self.run_id)
+        load_checkpoint_path = self.config.load_checkpoint_path
 
-        Returns:
-            trainable, non-trainable
-        """
+        if load_checkpoint_path is None:
+            load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
 
-        def trainable_and_diffable(pred):
-            if callable(pred):
-                return lambda x: pred(x) and is_inexact_arrayish(x)
-            elif pred is True:
-                return is_inexact_arrayish
-            else:
-                return pred
+        ckpt = checkpointer.load_checkpoint(
+            model, training_state, load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
+        )
 
-        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
-        return eqx.partition(model, combined_mask)
+        if ckpt is None and self.config.load_checkpoint is True:
+            raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
 
-    def maybe_load_checkpoint(
-        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Optional[Tuple[M, S, int]]:
-        """Loads a checkpoint if one exists and we're supposed to load it,
-        otherwise returns the model and training state as is"""
-        if self.config.load_checkpoint is not False:
-            # TODO: don't remake the checkpointer every time
-            checkpointer = self.config.checkpointer.create(self.run_id)
-            load_checkpoint_path = self.config.load_checkpoint_path
-
-            if load_checkpoint_path is None:
-                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-            ckpt = checkpointer.load_checkpoint(
-                model, training_state, load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
-            )
-
-            if ckpt is None and self.config.load_checkpoint is True:
-                raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
-
-            return ckpt
-        else:
-            return None
+        return ckpt
+    else:
+        return None
 
 
 def _initialize_global_tracker(config, run_id):
