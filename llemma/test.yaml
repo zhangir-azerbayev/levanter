@@ -1,9 +1,10 @@
-model_name_or_path: "meta-llama/Llama-2-7b-hf"
+model_name_or_path: "EleutherAI/llemma_7b"
 data: gsm8k
 data_cache_dir: /weka/proj-llemma-instruct/.cache
 trainer:
   mp: p=f32,c=bfloat16
   wandb:
+    name: "test"
     project: "levanter"
     tags: ["gsm8k", "lora", "llama2"]
   num_train_steps: 100  # 64 * 550 = 35200, which is a bit more than 4 epochs
